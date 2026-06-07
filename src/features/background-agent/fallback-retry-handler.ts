@@ -10,6 +10,7 @@ import {
   selectFallbackProvider,
 } from "../../shared/model-error-classifier"
 import { transformModelForProvider } from "../../shared/provider-model-id-transform"
+import { invalidateProviderHealth } from "../../shared/provider-health-check"
 import { abortWithTimeout } from "./abort-with-timeout"
 
 export async function tryFallbackRetry(args: {
@@ -31,6 +32,12 @@ export async function tryFallbackRetry(args: {
     hasMoreFallbacks(fallbackChain, task.attemptCount ?? 0)
 
   if (!canRetry) return false
+
+  // Invalidate health cache for the current provider so preflight checks
+  // re-probe instead of using stale "healthy" status. (#3269)
+  if (task.model?.providerID) {
+    invalidateProviderHealth(task.model.providerID)
+  }
 
   const attemptCount = task.attemptCount ?? 0
   const providerModelsCache = readProviderModelsCache()

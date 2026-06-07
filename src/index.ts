@@ -26,6 +26,7 @@ const OhMyOpenCodePlugin: Plugin = async (ctx) => {
   log("[OhMyOpenCodePlugin] ENTRY - plugin loading", {
     directory: ctx.directory,
   })
+  log("[oh-my-openagent] CUSTOM BUILD: provider-health-check enabled (#3269)")
   logLegacyPluginStartupWarning()
 
   const skillPluginCheck = detectExternalSkillPlugin(ctx.directory)

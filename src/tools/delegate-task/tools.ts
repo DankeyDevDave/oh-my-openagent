@@ -5,6 +5,9 @@ import { SISYPHUS_JUNIOR_AGENT } from "./sisyphus-junior-agent"
 import { mergeCategories } from "../../shared/merge-categories"
 import { log } from "../../shared/logger"
 import { buildSystemContent } from "./prompt-builder"
+import { checkProviderHealth, type ProviderListClient } from "../../shared/provider-health-check"
+import { parseModelString } from "./model-string-parser"
+import { transformModelForProvider } from "../../shared/provider-model-id-transform"
 import type {
   AvailableCategory,
   AvailableSkill,
@@ -24,6 +27,27 @@ import {
 export { resolveCategoryConfig } from "./categories"
 export type { SyncSessionCreatedEvent, DelegateTaskToolOptions, BuildSystemContentInput } from "./types"
 export { buildSystemContent, buildTaskPrompt } from "./prompt-builder"
+
+/**
+ * Finds the first healthy provider from a fallback entry's provider list,
+ * excluding the known-unhealthy provider.
+ */
+async function findHealthyFallbackProvider(
+  client: ProviderListClient,
+  providers: string[],
+  unhealthyProvider: string,
+): Promise<string | null> {
+  for (const provider of providers) {
+    if (provider.toLowerCase() === unhealthyProvider.toLowerCase()) {
+      continue
+    }
+    const healthy = await checkProviderHealth(client, provider)
+    if (healthy) {
+      return provider
+    }
+  }
+  return null
+}
 
 export function createDelegateTask(options: DelegateTaskToolOptions): ToolDefinition {
   const { userCategories } = options
@@ -237,6 +261,56 @@ export function createDelegateTask(options: DelegateTaskToolOptions): ToolDefini
         agentToUse = resolution.agentToUse
         categoryModel = resolution.categoryModel
         fallbackChain = resolution.fallbackChain
+      }
+
+      // Preflight health check: verify the resolved provider endpoint is
+      // reachable before spawning the subagent. If unreachable, advance
+      // through the fallback chain to find a healthy provider. (#3269)
+      if (categoryModel?.providerID && fallbackChain && fallbackChain.length > 0) {
+        const providerHealthy = await checkProviderHealth(options.client, categoryModel.providerID)
+        if (!providerHealthy) {
+          log("[task] preflight: provider unreachable, searching fallback chain", {
+            unreachableProvider: categoryModel.providerID,
+            model: categoryModel.modelID,
+          })
+
+          let foundHealthyFallback = false
+          for (const entry of fallbackChain) {
+            const healthyProvider = await findHealthyFallbackProvider(
+              options.client,
+              entry.providers,
+              categoryModel.providerID,
+            )
+            if (healthyProvider) {
+              const transformedModelId = transformModelForProvider(healthyProvider, entry.model)
+              const newModel = parseModelString(`${healthyProvider}/${transformedModelId}`)
+              if (newModel) {
+                log("[task] preflight: switching to healthy fallback", {
+                  from: `${categoryModel.providerID}/${categoryModel.modelID}`,
+                  to: `${healthyProvider}/${transformedModelId}`,
+                })
+                categoryModel = {
+                  ...categoryModel,
+                  providerID: newModel.providerID,
+                  modelID: newModel.modelID,
+                  variant: entry.variant ?? categoryModel.variant,
+                }
+                actualModel = `${healthyProvider}/${transformedModelId}`
+                if (modelInfo) {
+                  modelInfo = { ...modelInfo, model: actualModel }
+                }
+                foundHealthyFallback = true
+                break
+              }
+            }
+          }
+
+          if (!foundHealthyFallback) {
+            log("[task] preflight: all fallback providers unreachable, proceeding with original", {
+              provider: categoryModel.providerID,
+            })
+          }
+        }
       }
 
       const systemContent = buildSystemContent({

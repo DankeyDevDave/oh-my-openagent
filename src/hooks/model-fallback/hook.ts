@@ -5,6 +5,7 @@ import { readConnectedProvidersCache, readProviderModelsCache } from "../../shar
 import { selectFallbackProvider } from "../../shared/model-error-classifier"
 import { transformModelForProvider } from "../../shared/provider-model-id-transform"
 import { log } from "../../shared/logger"
+import { invalidateProviderHealth } from "../../shared/provider-health-check"
 import type { ChatMessageInput, ChatMessageHandlerOutput } from "../../plugin/chat-message"
 import { applyFallbackToChatMessage } from "./chat-message-fallback-handler"
 import { getNextReachableFallback } from "./next-fallback"
@@ -100,6 +101,11 @@ export function setPendingModelFallback(
     log("[model-fallback] Re-armed pending fallback for session: " + sessionID)
     return true
   }
+
+  // Invalidate health cache for the failing provider so that
+  // subsequent preflight checks and reachability checkers re-probe
+  // instead of using stale "healthy" status. (#3269)
+  invalidateProviderHealth(currentProviderID)
 
   const state: ModelFallbackState = {
     providerID: currentProviderID,
